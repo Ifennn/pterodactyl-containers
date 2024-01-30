@@ -8,9 +8,12 @@
 function start_server {
 
     # Create and set permissions for php session directory
-    echo "[init] Creating PHP Cache Directories"
-    mkdir -p /var/lib/caddy/php/{session,opcache,wsdlcache}
-    chmod 770 /var/lib/caddy/php/{session,opcache,wsdlcache}
+    echo "[init] Clearing tmp directory"
+    rm -rf /var/lib/www-user/tmp/
+
+    echo "[init] Creating and populating tmp directory"
+    mkdir -p /var/lib/www-user/tmp/php/{session,opcache,wsdlcache}
+    chmod 770 /var/lib/www-user/tmp/php/{session,opcache,wsdlcache}
 
     # Allows this container to have extra functionality on init
     if [ -d /entrypoint.d ]; then
@@ -21,7 +24,7 @@ function start_server {
     fi
 
     # Output loaded php modules before runtime.
-    printf "[init] Caddy Version: $(caddy version)\n"
+    printf "[init] NGINX Version: $(nginx --version)\n"
     _php_info=$(php -r "echo $PHP_VERSION;")
     printf "[init] PHP Version: $_php_info\n"
     printf "[init] Loaded PHP Modules:"
@@ -31,8 +34,8 @@ function start_server {
     echo "--- Starting Web Server ---"
 
     # Run these as jobs and monitor their pid status
-    /usr/sbin/php-fpm --nodaemonize --pid /var/lib/caddy/.php-fpm.pid & php_service_pid=$!
-    /usr/bin/caddy run --pidfile /var/lib/caddy/.caddy.pid --config /etc/caddy/Caddyfile & caddy_service_pid=$!
+    /usr/sbin/php-fpm --nodaemonize --pid /var/lib/www-user/.php-fpm.pid & php_service_pid=$!
+    /usr/sbin/nginx -e /dev/stderr -g "pid /var/lib/www-user/.nginx.pid; daemon off;" & nginx_service_pid=$!
 
     # Monitor Child Processes
     while ( true ); do
@@ -41,8 +44,8 @@ function start_server {
             sleep 1
             exit 1
         fi
-        if ! kill -0 "$caddy_service_pid" 2>/dev/null; then
-            echo "[caddy] service is no longer running! exiting..."
+        if ! kill -0 "$nginx_service_pid" 2>/dev/null; then
+            echo "[nginx] service is no longer running! exiting..."
             sleep 1
             exit 2
         fi
@@ -61,18 +64,19 @@ fi
 # Set ownership of stdout/stderr and run as caddy if running as root
 # This is set to maintain compatibility with existing installations that ran mainly as root.
 if [ "$user_id" = "0" ]; then
-    chown --dereference caddy "/proc/$$/fd/1" "/proc/$$/fd/2"
-    exec runuser --user caddy -- "$BASH_SOURCE" "$@"
+    chown --dereference www-user "/proc/$$/fd/1" "/proc/$$/fd/2"
+    exec runuser --user www-user -- "$BASH_SOURCE" "$@"
 fi
 
 case "${1}" in
-    "")
-        ;;
     "start-web")
         start_server
         ;;
-    "cron")
-        yacron -c /etc/yacron.d
+    "p:cron"|"cron")
+        exec yacron -c /etc/yacron.d
+        ;;
+    "p:worker"|"worker")
+        exec php /var/www/html/artisan queue:work --queue=standard --sleep=3 --tries=3
         ;;
     *)
         exec "$@"
